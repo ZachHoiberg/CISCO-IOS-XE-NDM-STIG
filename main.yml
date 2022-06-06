@@ -1,0 +1,409 @@
+---
+- name: LNK-E Cisco IOS-XE Switch NDM STIG Config
+  hosts: all
+  vars_files: secrets/secrets.yml
+  gather_facts: True
+  connection: network_cli
+  tasks:
+
+    - name: Create the lists from secrets
+      set_fact: 
+        ntpServersList: "{{ntpServers.split('\n')}}"
+        sshInACLList: "{{sshInACL.split('\n')}}"
+
+    - name: Getting ACL facts
+      ios_facts:
+        gather_subset: all
+        gather_network_resources: acls
+        
+    - name: Grabbing full running config for hidden defaults
+      ios_command:
+        commands: show running-config all
+      register: running_config
+
+    - name: CISC-ND-000010 - Limit the number of concurrent management sessions (1/3)
+      ios_config:
+        lines:
+          - ip http max-connections {{managementSessions|int *2|int}}
+
+    - name: CISC-ND-000010 - Limit the number of concurrent management sessions (2/3)
+      ios_config:
+        lines:
+          - transport input ssh
+        parents: line vty 0 {{managementSessions|int -1|int}}
+
+    - name: CISC-ND-000010 - Limit the number of concurrent management sessions (3/3)
+      ios_config:
+        lines:
+          - transport input none
+        parents: line vty {{managementSessions}} 31
+
+    - name: CISC-ND-000090, CISC-ND-000100, CISC-ND-000110, CISC-ND-000120, CISC-ND-000330 - Audit account creation, modification, disabling actions, removal actions. 
+      ios_config:
+        lines:
+          - logging enable
+        parents: 
+          - archive
+          - log config
+
+    - name: CISC-ND-000140 - Only allow administrative access from specific hosts (1/2)
+      ios_config:
+        lines: "{{sshInACLList}}"
+        parents: ip access-list extended SSH_IN
+                
+    - name: CISC-ND-000140 - Only allow administrative access from specific hosts (2/2)
+      ios_config:
+        lines:
+          - access-class SSH_IN in vrf-also
+        parents: "line vty 0 {{managementSessions|int -1|int}}"
+
+    - name: CISC-ND-000150 - Enforce user lockout from invalid logon attempts
+      ios_config:
+        lines:
+        - login block-for 900 attempts 3 within 120
+        - end
+        
+    - name: CISC-ND-000160 - Configure the login banner
+      cisco.ios.ios_banner:
+        banner: login
+        text: "{{loginBanner}}"
+        state: present
+        multiline_delimiter: '^'
+
+    - name: CISC-ND-000210, CISC-ND-000880, CISC-ND-000940, CISC-ND-001240, CISC-ND-001250, CISC-ND-001270 - Log administrator activity, enabling actions, execution of privileged functions and activities. Modification and deletion of admin privileges. - All
+      ios_config:
+        lines:
+          - logging userinfo
+
+    - name: CISC-ND-000250, CISC-ND-001260, CISC-ND-001280 - Log all logon attempts and concurrent logins.
+      ios_config:
+        lines:
+        - login on-failure log
+        - login on-success log
+
+    - name: CISC-ND-000280, CISC-ND-001050 - Audit records must contain date and time, log records in proper time-zone
+      ios_config:
+        lines:
+        - service timestamps log datetime localtime show-timezone
+        - clock timezone {{timezone}}
+        - clock summer-time {{summerTimezone}} recurring
+
+    - name: CISC-ND-000290 - Audit records must establish where the events occurred (1/3)
+      ios_acls:
+        config:
+        - afi: ipv4
+          acls: 
+          - name: "{{item.name}}"
+            acl_type: "{{item.acl_type}}"
+            aces:
+            - sequence: "{{item.aces[-1].sequence}}"
+              grant: deny
+              protocol: ip
+              source: 
+                any: True
+              destination:
+                any: True
+              log_input:
+                set: True
+        state: merged
+      loop: "{{ansible_network_resources.acls[0].acls}}"
+      when: 'item.name != "sl_def_acl" and item.name != "preauth_ipv4_acl (per-user)" and item.name != "IP-Adm-V4-Int-ACL-global" and item.name != "implicit_deny" and item.name != "implicit_permit" and item.name != "meraki-fqdn-dns" and item.name != "preauth_v4" and item.aces is defined and item.aces[-1].grant is defined and item.aces[-1].grant == "deny" and not "CoPP" in item.name and  (item.aces[-1].protocol != "ip" or not item.aces[-1].source.any or not item.aces[-1].destination.any != True or (not item.aces[-1].log_input.set is defined and not item.aces[-1].log_input.set))'
+
+    - name: CISC-ND-000290 - Audit records must establish where the events occurred (2/3)
+      ios_acls:
+        config:
+        - afi: ipv4
+          acls: 
+          - name: "{{item.name}}"
+            acl_type: "{{item.acl_type}}"
+            aces:
+            - sequence: "{{item.aces[-1].sequence|int + 10|int}}"
+              grant: deny
+              protocol: ip
+              source: 
+                any: True
+              destination:
+                any: True
+              log_input:
+                set: True
+        state: merged
+      loop: "{{ansible_network_resources.acls[0].acls}}"
+      when: 'item.name != "sl_def_acl" and item.name != "preauth_ipv4_acl (per-user)" and item.name != "IP-Adm-V4-Int-ACL-global" and item.name != "implicit_deny" and item.name != "implicit_permit" and item.name != "meraki-fqdn-dns" and item.name != "preauth_v4" and item.aces is defined and item.aces[-1].grant is defined and item.aces[-1].grant == "permit" and not "CoPP" in item.name'
+
+    - name: CISC-ND-000290 - Audit records must establish where the events occurred (3/3)
+      ios_acls:
+        config:
+        - afi: ipv4
+          acls: 
+          - name: "{{item.name}}"
+            acl_type: "{{item.acl_type}}"
+            aces:
+            - sequence: 10
+              grant: deny
+              protocol: ip
+              source: 
+                any: True
+              destination:
+                any: True
+              log_input:
+                set: True
+        state: merged
+      loop: "{{ansible_network_resources.acls[0].acls}}"
+      when: 'item.name != "sl_def_acl" and item.name != "preauth_ipv4_acl (per-user)" and item.name != "IP-Adm-V4-Int-ACL-global" and item.name != "implicit_deny" and item.name != "implicit_permit" and item.name != "meraki-fqdn-dns" and item.name != "preauth_v4" and item.aces is not defined and not "CoPP" in item.name'
+ 
+    - name: CISC-ND-000380, CISC-ND-000390, CISC-ND-000460 - Audit records should be protected from unauthorized modification and unauthorized deletion. Limit privileges to change the software resident.
+      ios_config:
+        lines:
+        - file privilege 15
+        running_config: "{{running_config.stdout[0]}}"
+
+    - name: CISC-ND-000470 - Prohibit unsecure and unnecessary services (1/6)
+      ios_config:
+        lines:
+        - no ip finger
+        - no ip http server
+        - no service config
+        - no service pad
+        running_config: "{{running_config.stdout[0]}}"
+
+    - name: CISC-ND-000470 - Prohibit unsecure and unnecessary services (2/6)
+      ios_config:
+        lines:
+        - no ip rcmd rsh-enable
+        running_config: "{{running_config.stdout[0]}}"
+      when: '"ip rcmd rsh-enable" in running_config.stdout[0]'
+
+    - name: CISC-ND-000470 - Prohibit unsecure and unnecessary services (3/6)
+      ios_config:
+        lines:
+        - no service finger
+        running_config: "{{running_config.stdout[0]}}"
+      when: '"service finger" in running_config.stdout[0]'
+
+    - name: CISC-ND-000470 - Prohibit unsecure and unnecessary services (4/6)
+      ios_config:
+        lines:
+        - no service tcp-small-servers
+        running_config: "{{running_config.stdout[0]}}"
+      when: '"service tcp-small-servers" in running_config.stdout[0]'
+
+    - name: CISC-ND-000470 - Prohibit unsecure and unnecessary services (5/6)
+      ios_config:
+        lines:
+        - no service udp-small-servers
+        running_config: "{{running_config.stdout[0]}}"
+      when: '"service udp-small-servers" in running_config.stdout[0]'
+
+    - name: CISC-ND-000470 - Prohibit unsecure and unnecessary services (6/6)
+      ios_config:
+        lines:
+        - no ip rcmd rcp-enable
+        running_config: "{{running_config.stdout[0]}}"
+      when: '"ip rcmd rcp-enable" in running_config.stdout[0]'
+        
+    - name: CISC-ND-000490 - Configure the switch to only use one local account as a last resort. (1/2) 
+      ios_config:
+        lines:
+        - aaa authentication login default group tacacs+ local
+        - aaa authorization exec default group tacacs+ local
+        - aaa accounting exec default start-stop group tacacs+
+        - aaa accounting commands 15 default start-stop group tacacs+
+
+    - name: CISC-ND-000490 - Configure the switch to only use one local account as a last resort. (2/2) 
+      ios_user:
+        name: '{{lastResortUsername}}'
+        privilege: 15
+        update_password: on_create
+        state: present
+        configured_password: '{{lastResortPassword}}'
+        
+    - name: CISC-ND-000530, CISC-ND-001210  - Configure the switch to implement replay-resistant auth mechanisms, protect confidentiality of remote sessions.
+      ignore_errors: Yes
+      ios_config:
+        lines:
+        - ip ssh version 2
+        - ip ssh server algorithm encryption aes256-ctr 
+        
+    - name: CISC-ND-000550, CISC-ND-000570, CISC-ND-000580, CISC-ND-000590, CISC-ND-000600, CISC-ND-000610, CISC-ND-000620 - Configure minimum password complexity, length, character position changes. (1/2)
+      ios_config:
+        lines: 
+          - service password-encryption
+
+    - name: CISC-ND-000550, CISC-ND-000570, CISC-ND-000580, CISC-ND-000590, CISC-ND-000600, CISC-ND-000610, CISC-ND-000620 - Configure minimum password complexity, length, character position changes. (2/2)
+      ios_config:
+        lines: 
+          - min-length 15
+          - upper-case 1
+          - lower-case 1
+          - numeric-count 1
+          - special-case 1
+          - char-changes 8
+        parents: aaa common-criteria policy PASSWORD_POLICY
+
+    - name: CISC-ND-000720 - The switch must terminate management sessions after 10 minutes of inactivity (1/3)
+      ios_config:
+        lines: 
+          - exec-timeout 10 0
+        parents: line vty 0 {{managementSessions|int -1|int}}
+        running_config: "{{running_config.stdout[0]}}"
+
+    - name: CISC-ND-000720 - The switch must terminate management sessions after 10 minutes of inactivity (2/3)
+      ios_config:
+        lines: 
+          - exec-timeout 10 0
+        parents: line con 0
+        running_config: "{{running_config.stdout[0]}}"
+
+    - name: CISC-ND-000720 - The switch must terminate management sessions after 10 minutes of inactivity (3/3)
+      ios_config:
+        lines: 
+          - ip http timeout-policy idle 600 life 7500 requests 75
+
+    - name: CISC-ND-000980 - The switch must have sufficient audit record storage capacity
+      ios_config:
+        lines:
+        - logging buffered 32768
+
+    - name: CISC-ND-001000, CISC-ND-001310, CISC-ND-001450 - The switch must be configured to generate an alert for audit failure events, offload records to a different system. (1/2)
+      ios_config:
+        lines:
+        - logging host {{logHost}} transport udp port 514
+        - logging trap notifications
+        running_config: "{{running_config.stdout[0]}}"
+        
+    - name: CISC-ND-001000, CISC-ND-001310, CISC-ND-001450 - The switch must be configured to generate an alert for audit failure events, offload records to a different system. (2/2)
+      ios_config:
+        lines:
+        - logging trap critical
+        running_config: "{{running_config.stdout[0]}}"
+      when: '"no logging trap critical" in running_config.stdout[0]'
+
+    - name: Grabbing running config
+      cisco.ios.ios_command:
+        commands: show running-config | include ntp server
+      register: running_config
+
+    - name: CISC-ND-001030 - The switch must be configured to synchronize its clock with a primary and secondary source
+      ios_config:
+        lines: "{{ntpServersList}}"
+        match: exact
+        replace: block
+        config: "{{running_config.stdout[0]}}"
+
+    - name: Grabbing running config
+      cisco.ios.ios_command:
+        commands: show running-config
+      register: running_config
+
+    - name: CISC-ND-001130, CISC-ND-001140 - The switch must use a FIPS validated HMAC for SNMP authentication with a FIPS 140-2 approved algorithm
+      ios_command:
+        commands:
+          - command: show snmp user
+      register: snmpUsers
+      
+    - name: CISC-ND-001130, CISC-ND-001140 - The switch must use a FIPS validated HMAC for SNMP authentication with a FIPS 140-2 approved algorithm (2/3)
+      ios_config:
+        lines:
+        - snmp-server group {{snmpGroup}} v3 priv match exact read vldefault
+        - snmp-server view vldefault iso included
+        - snmp-server chassis-id {{ansible_net_hostname}}
+        - snmp-server contact Information Technologies
+        running_config: "{{running_config.stdout[0]}}"   
+    - name: CISC-ND-001130, CISC-ND-001140 - The switch must use a FIPS validated HMAC for SNMP authentication with a FIPS 140-2 approved algorithm (3/3)
+      ios_config:
+        lines:
+        - snmp-server user {{snmpUser}} {{snmpGroup}} v3 auth sha {{snmpPassword}} priv aes 256 {{snmpPrivPassword}}
+      when: not snmpUsers.stdout is search("{{snmpUser}}")
+
+     
+#Need further testing
+#    - name: CISC-ND-001150 - The switch must be configured to authenticate NTP sources
+#      ios_config:
+#        lines:
+
+    - name: CISC-ND-001200 - The switch must use a FIPS validated HMAC for remote SSH
+      ios_config:
+        lines:
+        - ip ssh server algorithm mac hmac-sha2-512 hmac-sha2-256
+
+#need to make Idempotent
+#    - name: CISC-ND-001220 - The switch must be configured to protect against known DOS attacks 1/6
+
+    - name: CISC-ND-001370 - The switch must use an authentication server prior to granting administrative access
+      ios_config:
+        lines:
+        - ip http authentication aaa login-authentication default
+        - ip http secure-server
+        running_config: "{{running_config.stdout[0]}}"
+
+    - name: CISC-ND-001410 - The switch must conduct a configuration backup when changes occur.
+      ios_command:
+        commands:
+        - command: configure terminal
+        - command: no event manager applet BACKUP_CONFIG
+        - command: event manager applet BACKUP_CONFIG
+        - command: event syslog pattern "%SYS-5-CONFIG_I"
+        - command: action 1 cli command "enable"
+        - command: action 2 info type routername
+        - command: action 3 cli command "copy run tftp:" pattern "Address"
+        - command: action 4 cli command "{{backupHost}}" pattern "filename"
+        - command: action 5 cli command "$_info_routername-$_event_pub_sec"
+        - command: action 6 syslog priority informational msg "Configuration backup was executed"
+        - command: end
+
+    - name: CISC-ND-001440 - The switch must obtain its public key certificates from an appropriate CA policy and service provider 1/6
+      ios_config:
+        lines:
+        - ip domain name {{domainName}}
+
+    - name: CISC-ND-001440 - The switch must obtain its public key certificates from an appropriate CA policy and service provider 2/6
+      ios_command:
+        commands: 
+        - command: show crypto key mypubkey all
+      register: keyList
+
+    - name: CISC-ND-001440 - The switch must obtain its public key certificates from an appropriate CA policy and service provider 3/6
+      ios_command:
+        commands: 
+        - command: show crypto pki certificates
+      register: certList
+
+    - name: CISC-ND-001440 - The switch must obtain its public key certificates from an appropriate CA policy and service provider 4/6
+      ios_command:
+        commands:
+        - command: configure terminal
+        - command: crypto key generate rsa general-keys label {{trustpointName}} modulus 2048   
+      when: 'not keyList is search("{{trustpointName}}")'
+      vars: 
+        ansible_command_timeout: 2500
+    
+    - name: CISC-ND-001440 - The switch must obtain its public key certificates from an appropriate CA policy and service provider 5/6
+      ios_config:
+        lines:
+        - enrollment retry count 100
+        - enrollment retry period 1
+        - enrollment mode ra
+        - enrollment url http://{{trustpointIP}}:80/certsrv/mscep/mscep.dll
+        - serial-number none
+        - fqdn {{ansible_net_hostname}}.{{domainName}}
+        - ip-address Vlan{{switchVlan}}
+        - subject-alt-name {{ansible_net_hostname}}.{{domainName}}
+        - revocation-check none 
+        - rsakeypair {{trustpointName}}
+        - auto-enroll 30 regenerate
+        - hash sha1
+        parents: crypto pki trustpoint {{trustpointName}}
+        running_config: "{{running_config.stdout[0]}}"
+
+    - name: CISC-ND-001440 - The switch must obtain its public key certificates from an appropriate CA policy and service provider 6/6
+      ios_command:
+        commands:
+        - command: configure terminal
+        - command: crypto pki authenticate {{trustpointName}}
+          prompt: 'Do you accept this certificate\?'
+          answer: "yes"
+      vars: 
+        ansible_command_timeout: 2500
+      when: 'not certList is search("{{trustpointName}}")'
+
+#CISC-ND-001470 - The switch must be running an IOS release that is currently supported by Cisco Systems, update manually or use IOSUpgrade playbook.
