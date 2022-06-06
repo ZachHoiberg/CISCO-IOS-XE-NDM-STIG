@@ -1,5 +1,5 @@
 ---
-- name: LNK-E Cisco IOS-XE Switch NDM STIG Config
+- name: Cisco IOS-XE Switch NDM STIG Config
   hosts: all
   vars_files: secrets/secrets.yml
   gather_facts: True
